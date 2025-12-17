@@ -1,0 +1,174 @@
+from flask import request
+from flask_socketio import emit, join_room
+from app import socketio
+from app.game_logic import game_manager
+from config import Config
+import time
+from threading import Timer
+
+active_timers = {}
+
+@socketio.on('connect')
+def handle_connect():
+    print(f"Client connected: {request.sid}")
+    emit('connection_response', {'status': 'connected', 'sid': request.sid})
+    # Send current game state to newly connected client
+    emit('game_update', game_manager.get_game_summary())
+
+@socketio.on('request_game_state')
+def handle_request_game_state():
+    """Client requests current game state."""
+    emit('game_update', game_manager.get_game_summary())
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print(f"Client disconnected: {request.sid}")
+    # Mark player as disconnected
+    for player in game_manager.state.players.values():
+        if player.session_id == request.sid:
+            player.connected = False
+            emit('game_update', game_manager.get_game_summary(), broadcast=True)
+            break
+
+@socketio.on('register_trebek')
+def handle_register_trebek():
+    """Register Trebek user."""
+    game_manager.set_trebek(request.sid)
+    game_manager.load_questions()
+    join_room('trebek')
+    emit('registration_success', {'role': 'trebek'})
+    emit('game_update', game_manager.get_game_summary())
+
+@socketio.on('create_team')
+def handle_create_team(data):
+    """Create a new team."""
+    team_name = data.get('name', '').strip()
+    if not team_name:
+        emit('error', {'message': 'Team name required'})
+        return
+    
+    team = game_manager.create_team(team_name)
+    emit('game_update', game_manager.get_game_summary(), broadcast=True)
+
+@socketio.on('join_game')
+def handle_join_game(data):
+    """Player joins a team."""
+    player_name = data.get('name', '').strip()
+    team_id = data.get('team_id', '').strip()
+    
+    if not player_name or not team_id:
+        emit('error', {'message': 'Name and team required'})
+        return
+    
+    player = game_manager.add_player(player_name, team_id, request.sid)
+    if not player:
+        emit('error', {'message': 'Invalid team'})
+        return
+    
+    join_room('players')
+    join_room(team_id)
+    
+    emit('registration_success', {
+        'role': 'player',
+        'player_id': player.id,
+        'team_id': team_id
+    })
+    emit('game_update', game_manager.get_game_summary(), broadcast=True)
+
+
+@socketio.on('reconnect_player')
+def handle_reconnect_player(data):
+    """Player attempts to reconnect with existing ID."""
+    player_id = data.get('player_id')
+    team_id = data.get('team_id')
+
+    # Verify player exists
+    player = game_manager.state.players.get(player_id)
+    if player and player.team_id == team_id:
+        # Update session ID and mark as connected
+        player.session_id = request.sid
+        player.connected = True
+
+        join_room('players')
+        join_room(team_id)
+
+        emit('registration_success', {
+            'role': 'player',
+            'player_id': player.id,
+            'team_id': team_id
+        })
+        emit('game_update', game_manager.get_game_summary(), broadcast=True)
+    else:
+        # Player not found or invalid - clear localStorage on client
+        emit('reconnect_failed')
+
+@socketio.on('start_round')
+def handle_start_round(data):
+    """Start a game round."""
+    if request.sid != game_manager.state.trebek_session_id:
+        emit('error', {'message': 'Unauthorized'})
+        return
+    
+    round_num = data.get('round', 1)
+    game_manager.start_round(round_num)
+    
+    emit('game_update', game_manager.get_game_summary(), broadcast=True)
+    emit('board_update', {
+        'round': round_num,
+        'board': game_manager.get_board_state(round_num)
+    }, broadcast=True)
+
+@socketio.on('select_question')
+def handle_select_question(data):
+    """Trebek selects a question."""
+    if request.sid != game_manager.state.trebek_session_id:
+        emit('error', {'message': 'Unauthorized'})
+        return
+    
+    category = data.get('category')
+    value = data.get('value')
+    
+    question = game_manager.select_question(category, value)
+    if not question:
+        emit('error', {'message': 'Question not available'})
+        return
+    
+    emit('game_update', game_manager.get_game_summary(), broadcast=True)
+    
+    # Start buzz delay timer
+    def enable_buzzing_callback():
+        import time
+        time.sleep(Config.BUZZ_DELAY_SECONDS)
+        game_manager.enable_buzzing()
+        socketio.emit('game_update', game_manager.get_game_summary())
+    
+    socketio.start_background_task(enable_buzzing_callback)
+
+@socketio.on('buzz')
+def handle_buzz(data):
+    """Player buzzes in."""
+    player_id = data.get('player_id')
+    
+    success = game_manager.buzz_in(player_id)
+    if success:
+        emit('game_update', game_manager.get_game_summary(), broadcast=True)
+    else:
+        emit('buzz_rejected', {'reason': 'Already buzzed or team already attempted'})
+
+@socketio.on('adjudicate')
+def handle_adjudicate(data):
+    """Trebek adjudicates an answer."""
+    if request.sid != game_manager.state.trebek_session_id:
+        emit('error', {'message': 'Unauthorized'})
+        return
+    
+    correct = data.get('correct', False)
+    next_player_id, score_change = game_manager.adjudicate_answer(correct)
+    
+    current_round = 1 if game_manager.state.phase.value == 'round_1' else 2
+    
+    emit('game_update', game_manager.get_game_summary(), broadcast=True)
+    emit('board_update', {
+        'round': current_round,
+        'board': game_manager.get_board_state(current_round)
+    }, broadcast=True)
