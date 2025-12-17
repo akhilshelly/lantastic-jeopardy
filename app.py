@@ -1,6 +1,8 @@
+import socket
+
 from app import create_app, socketio
 from config import Config
-import socket
+
 
 def get_local_ip():
     """Get local IP address."""
@@ -12,6 +14,7 @@ def get_local_ip():
         return ip
     except:
         return "localhost"
+
 
 app = create_app()
 

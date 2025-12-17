@@ -1,10 +1,11 @@
-from flask import Blueprint, render_template_string, request, jsonify
-import qrcode
-import io
 import base64
-from app.game_logic import game_manager
+import io
+
+import qrcode
+from flask import Blueprint, render_template_string, request, jsonify
 
 bp = Blueprint('main', __name__)
+
 
 def get_local_ip():
     """Get local IP address for QR code."""
@@ -18,15 +19,18 @@ def get_local_ip():
     except:
         return "localhost"
 
+
 @bp.route('/')
 def index():
     """Trebek's main interface."""
     return render_template_string(TREBEK_TEMPLATE)
 
+
 @bp.route('/join')
 def join():
     """Jennings join and game interface."""
     return render_template_string(JENNINGS_TEMPLATE)
+
 
 @bp.route('/qr')
 def qr_code():
@@ -34,22 +38,28 @@ def qr_code():
     local_ip = get_local_ip()
     port = request.host.split(':')[-1]
     url = f"http://{local_ip}:{port}/join"
-    
+
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
     qr.add_data(url)
     qr.make(fit=True)
-    
+
     img = qr.make_image(fill_color="black", back_color="white")
-    
+
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
-    
+
     img_base64 = base64.b64encode(buf.getvalue()).decode()
     return jsonify({
         'qr_code': f"data:image/png;base64,{img_base64}",
         'url': url
     })
+
+
+@bp.route('/display')
+def display():
+    """TV display interface."""
+    return render_template_string(DISPLAY_TEMPLATE)
 
 
 TREBEK_TEMPLATE = """
@@ -384,6 +394,7 @@ TREBEK_TEMPLATE = """
             
             <div class="round-controls">
                 <button id="round2Button" class="btn-primary" onclick="startRound(2)" disabled>Start Round 2</button>
+                <button id="skipQuestionButton" class="btn-danger hidden" onclick="skipQuestion()">Skip Question</button>
             </div>
         </div>
     </div>
@@ -448,6 +459,10 @@ TREBEK_TEMPLATE = """
             socket.emit('adjudicate', { correct });
         }
         
+        function skipQuestion() {
+            socket.emit('skip_question');
+        }
+        
         function updateUI() {
             if (!gameState) return;
             
@@ -505,8 +520,16 @@ TREBEK_TEMPLATE = """
                     if (gameState.buzz_queue.length > 0) {
                         buzzQueue.classList.remove('hidden');
                         renderBuzzQueue();
+                        // Show skip button only when a question is active (Trebek may want to skip)
+                        document.getElementById('skipQuestionButton').classList.remove('hidden');
                     } else {
                         buzzQueue.classList.add('hidden');
+                        // If no buzz queue but question is active, allow Trebek to skip
+                        if (gameState.current_question) {
+                            document.getElementById('skipQuestionButton').classList.remove('hidden');
+                        } else {
+                            document.getElementById('skipQuestionButton').classList.add('hidden');
+                        }
                     }
                 }
             } else {
@@ -514,6 +537,7 @@ TREBEK_TEMPLATE = """
                 timerDisplay.classList.add('hidden');
                 buzzQueue.classList.add('hidden');
                 stopTimer();
+                document.getElementById('skipQuestionButton').classList.add('hidden');
             }
             
             // Update round 2 button state
@@ -965,8 +989,9 @@ JENNINGS_TEMPLATE = """
                     buzzButton.disabled = true;
                     setStatus('Reading question... wait for buzz activation');
                 } else if (gameState.question_state === 'buzzing_open') {
-                    // Check if my team already attempted
-                    const myTeamAttempted = gameState.buzz_queue.some(entry => entry.team_id === myTeamId);
+                    // Check if my team already attempted (server-provided list) or is in the buzz queue
+                    const attemptedTeams = gameState.teams_attempted || [];
+                    const myTeamAttempted = attemptedTeams.includes(myTeamId) || gameState.buzz_queue.some(entry => entry.team_id === myTeamId);
                     const myBuzzPosition = gameState.buzz_queue.findIndex(entry => entry.player_id === myPlayerId);
                     
                     if (myBuzzPosition >= 0) {
@@ -998,6 +1023,582 @@ JENNINGS_TEMPLATE = """
                                        type === 'active' ? 'rgba(255,215,0,0.3)' :
                                        type === 'error' ? 'rgba(220,20,60,0.3)' :
                                        'rgba(0,0,0,0.3)';
+        }
+    </script>
+</body>
+</html>
+"""
+
+DISPLAY_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Jeopardy - Display</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background: #060CE9;
+            color: white;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        .screen {
+            display: none;
+            min-height: 100vh;
+            padding: 40px;
+        }
+
+        .screen.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Lobby Screen */
+        .lobby-screen {
+            align-items: center;
+            justify-content: center;
+        }
+
+        .lobby-content {
+            text-align: center;
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        .lobby-title {
+            font-size: 5em;
+            margin-bottom: 40px;
+            color: #FFD700;
+            text-shadow: 4px 4px 8px rgba(0,0,0,0.5);
+            letter-spacing: 5px;
+        }
+
+        .qr-section {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            margin: 40px 0;
+            display: inline-block;
+        }
+
+        .qr-code {
+            width: 400px;
+            height: 400px;
+        }
+
+        .join-url {
+            color: #060CE9;
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-top: 20px;
+        }
+
+        .teams-display {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin-top: 60px;
+        }
+
+        .team-card {
+            background: rgba(255,255,255,0.15);
+            padding: 30px;
+            border-radius: 15px;
+            border-left: 8px solid #FFD700;
+        }
+
+        .team-card-name {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+
+        .team-card-players {
+            font-size: 1.5em;
+            opacity: 0.9;
+            line-height: 1.6;
+        }
+
+        /* Board Screen */
+        .board-screen {
+            flex-direction: column;
+        }
+
+        .scoreboard {
+            display: flex;
+            justify-content: space-around;
+            padding: 20px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+
+        .score-item {
+            text-align: center;
+        }
+
+        .score-team-name {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .score-value {
+            font-size: 3.5em;
+            font-weight: bold;
+            color: #FFD700;
+        }
+
+        .board-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .board {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 15px;
+            max-width: 1400px;
+            width: 100%;
+        }
+
+        .category-header {
+            background: #000;
+            padding: 30px 20px;
+            text-align: center;
+            font-size: 2em;
+            font-weight: bold;
+            color: #FFD700;
+            border-radius: 10px;
+            text-transform: uppercase;
+        }
+
+        .question-cell {
+            background: #060CE9;
+            padding: 50px 30px;
+            text-align: center;
+            font-size: 3.5em;
+            font-weight: bold;
+            color: #FFD700;
+            border-radius: 10px;
+            border: 3px solid #FFD700;
+            aspect-ratio: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .question-cell.used {
+            background: #333;
+            color: #666;
+            border-color: #666;
+        }
+
+        /* Question Screen */
+        .question-screen {
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .question-header {
+            width: 100%;
+            text-align: center;
+            padding: 30px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+        }
+
+        .question-category {
+            font-size: 3em;
+            color: #FFD700;
+            margin-bottom: 10px;
+        }
+
+        .question-value {
+            font-size: 2em;
+        }
+
+        .question-text-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 60px;
+        }
+
+        .question-text {
+            font-size: 4em;
+            text-align: center;
+            line-height: 1.4;
+            max-width: 1400px;
+        }
+
+        .buzz-timer {
+            font-size: 6em;
+            color: #FFD700;
+            animation: pulse 1s infinite;
+            text-align: center;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.1); }
+        }
+
+        /* Score Update Screen */
+        .score-update-screen {
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+        }
+
+        .score-update-content {
+            max-width: 1200px;
+        }
+
+        .answerer-info {
+            font-size: 3em;
+            margin-bottom: 40px;
+        }
+
+        .correct-indicator {
+            font-size: 8em;
+            margin: 40px 0;
+            animation: pop 0.5s ease-out;
+        }
+
+        .correct-indicator.correct {
+            color: #32CD32;
+        }
+
+        .correct-indicator.incorrect {
+            color: #DC143C;
+        }
+
+        @keyframes pop {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+
+        .score-change {
+            font-size: 4em;
+            margin: 30px 0;
+        }
+
+        .score-change.positive {
+            color: #32CD32;
+        }
+
+        .score-change.negative {
+            color: #DC143C;
+        }
+
+        .new-score {
+            font-size: 5em;
+            color: #FFD700;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Lobby Screen -->
+    <div id="lobbyScreen" class="screen lobby-screen">
+        <div class="lobby-content">
+            <h1 class="lobby-title">JEOPARDY!</h1>
+            <div class="qr-section">
+                <img id="qrCode" class="qr-code" alt="QR Code">
+                <div id="joinUrl" class="join-url"></div>
+            </div>
+            <div id="teamsDisplay" class="teams-display"></div>
+        </div>
+    </div>
+
+    <!-- Board Screen -->
+    <div id="boardScreen" class="screen board-screen">
+        <div id="scoreboard" class="scoreboard"></div>
+        <div class="board-container">
+            <div id="board" class="board"></div>
+        </div>
+    </div>
+
+    <!-- Question Screen -->
+    <div id="questionScreen" class="screen question-screen">
+        <div class="question-header">
+            <div id="questionCategory" class="question-category"></div>
+            <div id="questionValue" class="question-value"></div>
+        </div>
+        <div class="question-text-container">
+            <div id="questionText" class="question-text"></div>
+            <div id="buzzTimer" class="buzz-timer" style="display: none;"></div>
+        </div>
+        <div id="scoreboardBottom" class="scoreboard"></div>
+    </div>
+
+    <!-- Score Update Screen -->
+    <div id="scoreUpdateScreen" class="screen score-update-screen">
+        <div class="score-update-content">
+            <div id="answererInfo" class="answerer-info"></div>
+            <div id="correctIndicator" class="correct-indicator"></div>
+            <div id="scoreChange" class="score-change"></div>
+            <div id="newScore" class="new-score"></div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let gameState = null;
+        let currentBoard = null;
+        let timerInterval = null;
+        let lastAnswerer = null;
+        let lastCorrect = null;
+        let lastScoreChange = 0;
+
+        socket.on('connect', () => {
+            console.log('Display connected');
+            socket.emit('register_display');
+        });
+
+        socket.on('game_update', (data) => {
+            gameState = data;
+            updateDisplay();
+        });
+
+        socket.on('board_update', (data) => {
+            currentBoard = data;
+            renderBoard();
+        });
+
+        socket.on('score_update', (data) => {
+            // Show score update screen
+            lastAnswerer = data.player_name;
+            lastCorrect = data.correct;
+            lastScoreChange = data.score_change;
+            showScoreUpdate(data);
+        });
+
+        function updateDisplay() {
+            if (!gameState) return;
+
+            if (gameState.phase === 'lobby') {
+                showLobby();
+            } else if (gameState.current_question) {
+                if (gameState.buzz_timer_active) {
+                    showQuestionWithTimer();
+                } else {
+                    showQuestion();
+                }
+            } else if (gameState.phase === 'round_1' || gameState.phase === 'round_2') {
+                showBoard();
+            }
+        }
+
+        function showLobby() {
+            setActiveScreen('lobbyScreen');
+            loadQRCode();
+            renderTeams();
+        }
+
+        function showBoard() {
+            setActiveScreen('boardScreen');
+            renderScoreboard('scoreboard');
+            if (currentBoard) {
+                renderBoard();
+            }
+        }
+
+        function showQuestion() {
+            setActiveScreen('questionScreen');
+            document.getElementById('questionCategory').textContent = gameState.current_question.category;
+            document.getElementById('questionValue').textContent = '$' + gameState.current_question.value;
+            document.getElementById('questionText').textContent = gameState.current_question.question;
+            document.getElementById('questionText').style.display = 'block';
+            document.getElementById('buzzTimer').style.display = 'none';
+            renderScoreboard('scoreboardBottom');
+        }
+
+        function showQuestionWithTimer() {
+            setActiveScreen('questionScreen');
+            document.getElementById('questionCategory').textContent = gameState.current_question.category;
+            document.getElementById('questionValue').textContent = '$' + gameState.current_question.value;
+            document.getElementById('questionText').textContent = gameState.current_question.question;
+            document.getElementById('questionText').style.display = 'block';
+            document.getElementById('buzzTimer').style.display = 'block';
+
+            startTimer(4);
+            renderScoreboard('scoreboardBottom');
+        }
+
+        function showScoreUpdate(data) {
+            setActiveScreen('scoreUpdateScreen');
+
+            // Safely resolve team and prefer authoritative new_score from server
+            const team = gameState && gameState.teams ? gameState.teams.find(t => t.id === data.team_id) : null;
+            const teamName = team ? team.name : (data.team_id || 'Unknown Team');
+            const newScore = (data.new_score !== undefined && data.new_score !== null)
+                ? data.new_score
+                : (team ? team.score : null);
+
+            document.getElementById('answererInfo').textContent = `${data.player_name || 'Unknown'} from ${teamName}`;
+
+            const indicator = document.getElementById('correctIndicator');
+            indicator.textContent = data.correct ? '✓ CORRECT!' : '✗ INCORRECT';
+            indicator.className = 'correct-indicator ' + (data.correct ? 'correct' : 'incorrect');
+
+            const change = document.getElementById('scoreChange');
+            change.textContent = (data.score_change >= 0 ? '+' : '') + '$' + Math.abs(data.score_change || 0);
+            change.className = 'score-change ' + ((data.score_change || 0) >= 0 ? 'positive' : 'negative');
+
+            document.getElementById('newScore').textContent = newScore !== null ? 'New Score: $' + newScore : '';
+
+            // Return to appropriate screen after 3 seconds based on latest gameState
+            setTimeout(() => {
+                // If a question is still active, show the question screen (so next buzzer can be adjudicated)
+                if (gameState && gameState.current_question) {
+                    if (gameState.buzz_timer_active) {
+                        showQuestionWithTimer();
+                    } else {
+                        showQuestion();
+                    }
+                } else {
+                    // No current question - show board
+                    showBoard();
+                }
+            }, 3000);
+        }
+
+        function setActiveScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            document.getElementById(screenId).classList.add('active');
+        }
+
+        function loadQRCode() {
+            fetch('/qr')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('qrCode').src = data.qr_code;
+                    document.getElementById('joinUrl').textContent = data.url;
+                });
+        }
+
+        function renderTeams() {
+            if (!gameState || !gameState.teams) return;
+
+            const container = document.getElementById('teamsDisplay');
+            container.innerHTML = '';
+
+            gameState.teams.forEach(team => {
+                const card = document.createElement('div');
+                card.className = 'team-card';
+                card.style.borderLeftColor = team.color;
+                card.innerHTML = `
+                    <div class="team-card-name">${team.name}</div>
+                    <div class="team-card-players">
+                        ${team.players.map(p => p.name).join('<br>')}
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function renderScoreboard(elementId) {
+            if (!gameState || !gameState.teams) return;
+
+            const scoreboard = document.getElementById(elementId);
+            scoreboard.innerHTML = '';
+
+            gameState.teams.forEach(team => {
+                const item = document.createElement('div');
+                item.className = 'score-item';
+                item.innerHTML = `
+                    <div class="score-team-name" style="color: ${team.color}">${team.name}</div>
+                    <div class="score-value">$${team.score}</div>
+                `;
+                scoreboard.appendChild(item);
+            });
+        }
+
+        function renderBoard() {
+            if (!currentBoard) return;
+            
+            const board = document.getElementById('board');
+            board.innerHTML = '';
+            
+            const categories = Object.keys(currentBoard.board);
+            const round = currentBoard.round;
+            const expectedValues = round === 1 
+                ? [100, 200, 300, 400, 500] 
+                : [200, 400, 600, 800, 1000];
+
+            board.style.gridTemplateRows = `auto repeat(${expectedValues.length}, 1fr)`;
+
+            categories.forEach((cat, colIndex) => {
+                const header = document.createElement('div');
+                header.className = 'category-header';
+                header.textContent = cat;
+                header.style.gridColumn = colIndex + 1;
+                header.style.gridRow = 1;
+                board.appendChild(header);
+            });
+
+            categories.forEach((cat, colIndex) => {
+                const questions = currentBoard.board[cat];
+
+                expectedValues.forEach((expectedValue, rowIndex) => {
+                    const cell = document.createElement('div');
+                    cell.style.gridColumn = colIndex + 1;
+                    cell.style.gridRow = rowIndex + 2;
+
+                    const q = questions.find(question => question.value === expectedValue);
+
+                    if (q) {
+                        cell.className = 'question-cell' + (q.used ? ' used' : '');
+                        cell.textContent = '$' + q.value;
+                    } else {
+                        cell.className = 'question-cell used';
+                        cell.textContent = '—';
+                        cell.style.opacity = '0.3';
+                    }
+
+                    board.appendChild(cell);
+                });
+            });
+        }
+
+        function startTimer(seconds) {
+            stopTimer();
+            let remaining = seconds;
+            const display = document.getElementById('buzzTimer');
+            display.textContent = remaining;
+
+            timerInterval = setInterval(() => {
+                remaining--;
+                if (remaining >= 0) {
+                    display.textContent = remaining;
+                } else {
+                    stopTimer();
+                    document.getElementById('buzzTimer').style.display = 'none';
+                    document.getElementById('questionText').style.display = 'block';
+                }
+            }, 1000);
+        }
+
+        function stopTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
         }
     </script>
 </body>

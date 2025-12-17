@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
 from enum import Enum
+from typing import List, Dict, Optional
+
 
 class GamePhase(Enum):
     LOBBY = "lobby"
@@ -8,11 +9,13 @@ class GamePhase(Enum):
     ROUND_2 = "round_2"
     GAME_OVER = "game_over"
 
+
 class QuestionState(Enum):
     BOARD_ACTIVE = "board_active"
     QUESTION_REVEALED = "question_revealed"
     BUZZING_OPEN = "buzzing_open"
     ANSWER_IN_PROGRESS = "answer_in_progress"
+
 
 @dataclass
 class Player:
@@ -22,6 +25,7 @@ class Player:
     session_id: str
     connected: bool = True
 
+
 @dataclass
 class Team:
     id: str
@@ -29,6 +33,7 @@ class Team:
     score: int = 0
     player_ids: List[str] = field(default_factory=list)
     color: str = "#FFD700"  # Gold default
+
 
 @dataclass
 class Question:
@@ -39,6 +44,7 @@ class Question:
     answer: str
     used: bool = False
 
+
 @dataclass
 class BuzzEntry:
     player_id: str
@@ -46,6 +52,7 @@ class BuzzEntry:
     team_id: str
     team_name: str
     timestamp: float
+
 
 @dataclass
 class GameState:

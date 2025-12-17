@@ -7,11 +7,13 @@ A fully-featured Jeopardy game webapp for local party hosting.
 1. Install Python 3.8 or higher
 
 2. Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 3. Create your questions file at `data/questions.csv` with format:
+
 ```csv
 Round,Category,Value,Question,Answer
 1,Geography,100,This is the capital of France,What is Paris?
@@ -21,6 +23,7 @@ Round,Category,Value,Question,Answer
 ## Running the Game
 
 1. Start the server:
+
 ```bash
 python app.py
 ```

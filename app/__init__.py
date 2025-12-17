@@ -1,8 +1,10 @@
 from flask import Flask
 from flask_socketio import SocketIO
+
 from config import Config
 
 socketio = SocketIO(cors_allowed_origins="*")
+
 
 def create_app():
     global socketio
@@ -14,5 +16,5 @@ def create_app():
 
     from app import routes, events
     app.register_blueprint(routes.bp)
-    
+
     return app
