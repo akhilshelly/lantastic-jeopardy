@@ -1,19 +1,24 @@
 import csv
+import logging
 import time
 from typing import Optional, Dict, Tuple
 
 from app.models import GameState, Team, Player, Question, BuzzEntry, GamePhase, QuestionState
 from config import Config
 
+logger = logging.getLogger(__name__)
+
 
 class GameManager:
     def __init__(self):
+        logger.debug("Initializing GameManager")
         self.state = GameState()
         self._team_colors = ["#FFD700", "#4169E1", "#DC143C", "#32CD32", "#FF8C00", "#9370DB"]
         self._next_color_idx = 0
 
     def load_questions(self) -> bool:
         """Load questions from CSV file."""
+        logger.info(f"Loading questions from {Config.QUESTIONS_FILE}")
         try:
             with open(Config.QUESTIONS_FILE, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
@@ -27,9 +32,13 @@ class GameManager:
                         answer=row['Answer']
                     )
                     self.state.questions.append(q)
+            logger.info(f"Successfully loaded {len(self.state.questions)} questions")
             return len(self.state.questions) > 0
+        except FileNotFoundError:
+            logger.error(f"Questions file not found at {Config.QUESTIONS_FILE}")
+            return False
         except Exception as e:
-            print(f"Error loading questions: {e}")
+            logger.error(f"Error loading questions: {e}", exc_info=True)
             return False
 
     def create_team(self, name: str) -> Team:
@@ -40,11 +49,13 @@ class GameManager:
 
         team = Team(id=team_id, name=name, color=color)
         self.state.teams[team_id] = team
+        logger.info(f"Team created: {name} (ID: {team_id}, Color: {color})")
         return team
 
     def add_player(self, name: str, team_id: str, session_id: str) -> Optional[Player]:
         """Add a player to a team."""
         if team_id not in self.state.teams:
+            logger.warning(f"Player {name} failed to join: team {team_id} does not exist")
             return None
 
         player_id = f"player_{len(self.state.players) + 1}"
@@ -53,11 +64,13 @@ class GameManager:
         self.state.players[player_id] = player
         self.state.teams[team_id].player_ids.append(player_id)
 
+        logger.info(f"Player added: {name} (ID: {player_id}) to team {team_id}")
         return player
 
     def set_trebek(self, session_id: str):
         """Set the Trebek session."""
         self.state.trebek_session_id = session_id
+        logger.info(f"Trebek registered with session ID: {session_id}")
 
     def start_round(self, round_num: int):
         """Start a game round."""
@@ -66,6 +79,7 @@ class GameManager:
         elif round_num == 2:
             self.state.phase = GamePhase.ROUND_2
         self.state.question_state = QuestionState.BOARD_ACTIVE
+        logger.info(f"Round {round_num} started")
 
     def get_board_state(self, round_num: int) -> Dict:
         """Get the current board state for a round."""
@@ -104,29 +118,39 @@ class GameManager:
                 self.state.buzz_queue = []
                 self.state.teams_attempted = []
                 self.state.buzz_timer_active = True
+                logger.info(f"Question selected: R{current_round} {category} ${value}")
+                logger.debug(f"Question text: {q.question}, Answer: {q.answer}")
                 return q
+
+        logger.warning(f"Question not found or already used: R{current_round} {category} ${value}")
         return None
 
     def enable_buzzing(self):
         """Enable buzzing after timer expires."""
         self.state.question_state = QuestionState.BUZZING_OPEN
         self.state.buzz_timer_active = False
+        logger.debug("Buzzing enabled")
 
     def buzz_in(self, player_id: str) -> bool:
         """Player attempts to buzz in."""
+        player = self.state.players.get(player_id)
+
         if self.state.question_state != QuestionState.BUZZING_OPEN:
+            logger.debug(f"Buzz rejected for {player.name if player else player_id}: buzzing not open (state={self.state.question_state.value})")
             return False
 
-        player = self.state.players.get(player_id)
         if not player:
+            logger.warning(f"Buzz attempt from unknown player: {player_id}")
             return False
 
         # Check if this team already attempted
         if player.team_id in self.state.teams_attempted:
+            logger.debug(f"Buzz rejected for {player.name}: team already attempted")
             return False
 
         # Check if player already in queue
         if any(entry.player_id == player_id for entry in self.state.buzz_queue):
+            logger.debug(f"Buzz rejected for {player.name}: already in queue")
             return False
 
         team = self.state.teams[player.team_id]
@@ -139,11 +163,13 @@ class GameManager:
         )
 
         self.state.buzz_queue.append(entry)
+        logger.info(f"Player buzzed: {player.name} ({team.name}), queue position: {len(self.state.buzz_queue)}")
         return True
 
     def adjudicate_answer(self, correct: bool) -> Tuple[Optional[str], int]:
         """Adjudicate the current answer. Returns (next_player_id, score_change)."""
         if not self.state.current_question or not self.state.buzz_queue:
+            logger.warning("Adjudication attempted with no current question or buzz queue")
             return None, 0
 
         current_buzzer = self.state.buzz_queue[0]
@@ -152,15 +178,20 @@ class GameManager:
 
         if correct:
             # Correct answer - award points and end question
+            old_score = team.score
             team.score += value
             self.state.current_question = None
             self.state.buzz_queue = []
             self.state.teams_attempted = []
             self.state.question_state = QuestionState.BOARD_ACTIVE
+            logger.info(f"Answer correct: {current_buzzer.player_name} ({team.name}) +${value} (${old_score} → ${team.score})")
             return None, value
         else:
             # Wrong answer - deduct points and move to next buzzer
+            old_score = team.score
             team.score -= value
+            logger.info(f"Answer incorrect: {current_buzzer.player_name} ({team.name}) -${value} (${old_score} → ${team.score})")
+
             # Add team to attempted list if not already present
             if current_buzzer.team_id not in self.state.teams_attempted:
                 self.state.teams_attempted.append(current_buzzer.team_id)
@@ -170,6 +201,8 @@ class GameManager:
             if self.state.buzz_queue:
                 # More people in queue - next buzzer answers
                 next_player_id = self.state.buzz_queue[0].player_id
+                next_player = self.state.players.get(next_player_id)
+                logger.debug(f"Next buzzer: {next_player.name if next_player else next_player_id}")
                 return next_player_id, -value
             else:
                 # No queued buzzers. If there are teams that haven't yet attempted,
@@ -180,12 +213,14 @@ class GameManager:
                     # Open buzzing for remaining teams
                     self.state.question_state = QuestionState.BUZZING_OPEN
                     self.state.buzz_timer_active = False
+                    logger.debug(f"Buzzing reopened for {len(remaining_teams)} remaining team(s)")
                     return None, -value
                 else:
                     # All teams have attempted - end question and return to board
                     self.state.current_question = None
                     self.state.teams_attempted = []
                     self.state.question_state = QuestionState.BOARD_ACTIVE
+                    logger.info("All teams attempted question, returning to board")
                     return None, -value
 
     def get_game_summary(self) -> Dict:
@@ -249,7 +284,10 @@ class GameManager:
     def is_round_complete(self, round_num: int) -> bool:
         """Check if all questions in a round have been used."""
         round_questions = [q for q in self.state.questions if q.round == round_num]
-        return all(q.used for q in round_questions)
+        is_complete = all(q.used for q in round_questions)
+        if is_complete:
+            logger.info(f"Round {round_num} complete: all {len(round_questions)} questions used")
+        return is_complete
 
 
 # Global game manager instance

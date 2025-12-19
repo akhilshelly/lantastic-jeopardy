@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @socketio.on('connect')
 def handle_connect():
-    logger.info(f"Client connected: {request.sid}")
+    logger.info(f"Client connected: session_id={request.sid}, address={request.remote_addr}")
     emit('connection_response', {'status': 'connected', 'sid': request.sid})
     # Send current game state to newly connected client
     emit('game_update', game_manager.get_game_summary())
@@ -82,15 +82,20 @@ def handle_join_game(data):
     player_name = data.get('name', '').strip()
     team_id = data.get('team_id', '').strip()
 
+    logger.info(f"Player join attempt: name={player_name}, team_id={team_id}, session_id={request.sid}")
+
     if not player_name or not team_id:
+        logger.warning(f"Invalid join attempt from {request.sid}: missing name or team_id")
         emit('error', {'message': 'Name and team required'})
         return
 
     player = game_manager.add_player(player_name, team_id, request.sid)
     if not player:
+        logger.warning(f"Player {player_name} failed to join team {team_id}: invalid team")
         emit('error', {'message': 'Invalid team'})
         return
 
+    logger.info(f"Player {player_name} (ID: {player.id}) successfully joined team {team_id}")
     join_room('players')
     join_room(team_id)
 
@@ -108,13 +113,17 @@ def handle_reconnect_player(data):
     player_id = data.get('player_id')
     team_id = data.get('team_id')
 
+    logger.info(f"Reconnection attempt: player_id={player_id}, team_id={team_id}, session_id={request.sid}")
+
     # Verify player exists
     player = game_manager.state.players.get(player_id)
     if player and player.team_id == team_id:
         # Update session ID and mark as connected
+        old_session = player.session_id
         player.session_id = request.sid
         player.connected = True
 
+        logger.info(f"Player {player.name} reconnected: {old_session} → {request.sid}")
         join_room('players')
         join_room(team_id)
 
@@ -126,6 +135,7 @@ def handle_reconnect_player(data):
         emit('game_update', game_manager.get_game_summary(), broadcast=True)
     else:
         # Player not found or invalid - clear localStorage on client
+        logger.warning(f"Reconnection failed: player_id={player_id} not found or team_id mismatch")
         emit('reconnect_failed')
 
 
@@ -133,10 +143,12 @@ def handle_reconnect_player(data):
 def handle_start_round(data):
     """Start a game round."""
     if request.sid != game_manager.state.trebek_session_id:
+        logger.warning(f"Unauthorized start_round attempt from {request.sid}")
         emit('error', {'message': 'Unauthorized'})
         return
 
     round_num = data.get('round', 1)
+    logger.info(f"Trebek starting round {round_num}")
     game_manager.start_round(round_num)
 
     emit('game_update', game_manager.get_game_summary(), broadcast=True)
@@ -150,14 +162,17 @@ def handle_start_round(data):
 def handle_select_question(data):
     """Trebek selects a question."""
     if request.sid != game_manager.state.trebek_session_id:
+        logger.warning(f"Unauthorized select_question attempt from {request.sid}")
         emit('error', {'message': 'Unauthorized'})
         return
 
     category = data.get('category')
     value = data.get('value')
 
+    logger.info(f"Trebek selecting question: {category} ${value}")
     question = game_manager.select_question(category, value)
     if not question:
+        logger.warning(f"Question selection failed: {category} ${value} not available")
         emit('error', {'message': 'Question not available'})
         return
 
@@ -168,6 +183,7 @@ def handle_select_question(data):
         import time
         time.sleep(Config.BUZZ_DELAY_SECONDS)
         game_manager.enable_buzzing()
+        logger.debug(f"Buzz delay ({Config.BUZZ_DELAY_SECONDS}s) expired, buzzing now enabled")
         socketio.emit('game_update', game_manager.get_game_summary())
 
     socketio.start_background_task(enable_buzzing_callback)
@@ -180,8 +196,10 @@ def handle_buzz(data):
 
     success = game_manager.buzz_in(player_id)
     if success:
+        logger.debug(f"Buzz accepted for player {player_id}")
         emit('game_update', game_manager.get_game_summary(), broadcast=True)
     else:
+        logger.debug(f"Buzz rejected for player {player_id}")
         emit('buzz_rejected', {'reason': 'Already buzzed or team already attempted'})
 
 
@@ -189,6 +207,7 @@ def handle_buzz(data):
 def handle_adjudicate(data):
     """Trebek adjudicates an answer."""
     if request.sid != game_manager.state.trebek_session_id:
+        logger.warning(f"Unauthorized adjudication attempt from {request.sid}")
         emit('error', {'message': 'Unauthorized'})
         return
 
@@ -231,11 +250,11 @@ def handle_adjudicate(data):
             'old_score': old_score,
             'new_score': new_score
         }
-        print('Emitting score_update to display:', payload)
+        logger.debug(f"Emitting score_update to display: {payload}")
         emit('score_update', payload, to='display')
     else:
         if correct and not team_id:
-            print('Warning: adjudicate marked correct but no buzzer/team found; skipping score_update emit')
+            logger.warning("Adjudication marked correct but no buzzer/team found; skipping score_update emit")
 
     # If question ended (no current question), update the board for all displays
     current_round = 1 if game_manager.state.phase.value == 'round_1' else 2
@@ -250,8 +269,11 @@ def handle_adjudicate(data):
 def handle_skip_question():
     """Trebek manually skips the current question and returns to the board."""
     if request.sid != game_manager.state.trebek_session_id:
+        logger.warning(f"Unauthorized skip_question attempt from {request.sid}")
         emit('error', {'message': 'Unauthorized'})
         return
+
+    logger.info("Trebek skipping current question")
 
     # Clear current question and reset relevant state
     game_manager.state.current_question = None
