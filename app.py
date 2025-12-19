@@ -3,6 +3,7 @@ import socket
 from app import create_app, socketio
 from config import Config
 
+from app.logging_config import setup_logging
 
 def get_local_ip():
     """Get local IP address."""
@@ -19,6 +20,7 @@ def get_local_ip():
 app = create_app()
 
 if __name__ == '__main__':
+    setup_logging()
     local_ip = get_local_ip()
     print(f"\n{'=' * 60}")
     print(f"🎮 JEOPARDY GAME SERVER")

@@ -1,3 +1,5 @@
+import logging
+
 from flask import request
 from flask_socketio import emit, join_room
 
@@ -8,10 +10,11 @@ from config import Config
 
 active_timers = {}
 
+logger = logging.getLogger(__name__)
 
 @socketio.on('connect')
 def handle_connect():
-    print(f"Client connected: {request.sid}")
+    logger.info(f"Client connected: {request.sid}")
     emit('connection_response', {'status': 'connected', 'sid': request.sid})
     # Send current game state to newly connected client
     emit('game_update', game_manager.get_game_summary())
@@ -25,7 +28,7 @@ def handle_request_game_state():
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print(f"Client disconnected: {request.sid}")
+    logger.info(f"Client disconnected: {request.sid}")
     # Mark player as disconnected
     for player in game_manager.state.players.values():
         if player.session_id == request.sid:
@@ -69,6 +72,7 @@ def handle_create_team(data):
         return
 
     team = game_manager.create_team(team_name)
+    logger.info(f"Team created: {team.name} (ID: {team.id})")
     emit('game_update', game_manager.get_game_summary(), broadcast=True)
 
 

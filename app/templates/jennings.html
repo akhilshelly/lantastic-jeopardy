@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Jeopardy - Player</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background: #060CE9;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 500px;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            text-align: center;
+            margin-bottom: 30px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            color: #FFD700;
+        }
+
+        .join-section, .game-section {
+            background: rgba(255,255,255,0.1);
+            padding: 30px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255,215,0,0.3);
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 15px;
+            font-size: 1.1em;
+            border: none;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            background: white;
+            color: #060CE9;
+        }
+
+        select {
+            width: 100%;
+            padding: 15px;
+            font-size: 1.1em;
+            border: none;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            background: white;
+            color: #060CE9;
+        }
+
+        button {
+            width: 100%;
+            padding: 20px;
+            font-size: 1.3em;
+            font-weight: bold;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .btn-join {
+            background: #FFD700;
+            color: #060CE9;
+        }
+
+        .btn-join:hover {
+            background: #FFA500;
+            transform: translateY(-2px);
+        }
+
+        .buzz-button {
+            background: #DC143C;
+            color: white;
+            font-size: 2em;
+            padding: 60px;
+            border-radius: 50%;
+            width: 250px;
+            height: 250px;
+            margin: 30px auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 10px 30px rgba(220,20,60,0.5);
+        }
+
+        .buzz-button:hover:not(:disabled) {
+            background: #8B0000;
+            transform: scale(1.1);
+            box-shadow: 0 15px 40px rgba(220,20,60,0.7);
+        }
+
+        .buzz-button:active:not(:disabled) {
+            transform: scale(0.95);
+        }
+
+        .buzz-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .team-info {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .team-name {
+            font-size: 1.8em;
+            color: #FFD700;
+            margin-bottom: 10px;
+        }
+
+        .team-score {
+            font-size: 3em;
+            font-weight: bold;
+        }
+
+        .status-message {
+            text-align: center;
+            font-size: 1.2em;
+            padding: 20px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+
+        .question-info {
+            background: rgba(0,0,0,0.5);
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .category {
+            font-size: 1.3em;
+            color: #FFD700;
+            margin-bottom: 5px;
+        }
+
+        .value {
+            font-size: 1.8em;
+            font-weight: bold;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .buzz-position {
+            font-size: 1.5em;
+            color: #32CD32;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>JEOPARDY!</h1>
+
+        <div id="joinView" class="join-section">
+            <input type="text" id="playerName" placeholder="Enter your name...">
+            <select id="teamSelect">
+                <option value="">Select your team...</option>
+            </select>
+            <button class="btn-join" onclick="joinGame()">Join Game</button>
+        </div>
+
+        <div id="gameView" class="game-section hidden">
+            <div class="team-info">
+                <div class="team-name" id="teamName"></div>
+                <div class="team-score" id="teamScore">$0</div>
+            </div>
+
+            <div id="questionInfo" class="question-info hidden">
+                <div class="category" id="questionCategory"></div>
+                <div class="value" id="questionValue"></div>
+            </div>
+
+            <button id="buzzButton" class="buzz-button" onclick="buzz()" disabled>
+                BUZZ!
+            </button>
+
+            <div id="statusMessage" class="status-message"></div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let myPlayerId = null;
+        let myTeamId = null;
+        let gameState = null;
+
+        // Check if player was already registered
+        function checkExistingPlayer() {
+            const savedPlayerId = localStorage.getItem('jeopardy_player_id');
+            const savedTeamId = localStorage.getItem('jeopardy_team_id');
+
+            if (savedPlayerId && savedTeamId) {
+                // Try to reconnect as existing player
+                socket.emit('reconnect_player', {
+                    player_id: savedPlayerId,
+                    team_id: savedTeamId
+                });
+            }
+        }
+
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            // Request initial game state
+            socket.emit('request_game_state');
+            // Check if we're reconnecting
+            checkExistingPlayer();
+        });
+
+        socket.on('game_update', (data) => {
+            gameState = data;
+
+            // Update team dropdown if still in join view
+            if (!myPlayerId) {
+                loadTeams();
+            }
+
+            updateUI();
+        });
+
+        socket.on('registration_success', (data) => {
+            if (data.role === 'player') {
+                myPlayerId = data.player_id;
+                myTeamId = data.team_id;
+
+                // Save to localStorage for reconnection
+                localStorage.setItem('jeopardy_player_id', myPlayerId);
+                localStorage.setItem('jeopardy_team_id', myTeamId);
+
+                document.getElementById('joinView').classList.add('hidden');
+                document.getElementById('gameView').classList.remove('hidden');
+            }
+        });
+
+        socket.on('buzz_rejected', (data) => {
+            setStatus('Buzz rejected: ' + data.reason, 'error');
+        });
+
+        socket.on('error', (data) => {
+            alert('Error: ' + data.message);
+        });
+
+        socket.on('reconnect_failed', () => {
+            // Clear invalid stored credentials
+            localStorage.removeItem('jeopardy_player_id');
+            localStorage.removeItem('jeopardy_team_id');
+        });
+
+        function loadTeams() {
+            const select = document.getElementById('teamSelect');
+
+            if (!gameState || !gameState.teams || gameState.teams.length === 0) {
+                select.innerHTML = '<option value="">No teams created yet...</option>';
+                return;
+            }
+
+            select.innerHTML = '<option value="">Select your team...</option>';
+            gameState.teams.forEach(team => {
+                const option = document.createElement('option');
+                option.value = team.id;
+                option.textContent = team.name;
+                select.appendChild(option);
+            });
+        }
+
+        function joinGame() {
+            const name = document.getElementById('playerName').value.trim();
+            const teamId = document.getElementById('teamSelect').value;
+
+            if (!name || !teamId) {
+                alert('Please enter your name and select a team');
+                return;
+            }
+
+            socket.emit('join_game', { name, team_id: teamId });
+        }
+
+        function buzz() {
+            socket.emit('buzz', { player_id: myPlayerId });
+        }
+
+        function updateUI() {
+            if (!gameState || !myTeamId) return;
+
+            const myTeam = gameState.teams.find(t => t.id === myTeamId);
+            if (!myTeam) return;
+
+            document.getElementById('teamName').textContent = myTeam.name;
+            document.getElementById('teamScore').textContent = `${myTeam.score}`;
+
+            const buzzButton = document.getElementById('buzzButton');
+            const questionInfo = document.getElementById('questionInfo');
+
+            if (gameState.current_question) {
+                questionInfo.classList.remove('hidden');
+                document.getElementById('questionCategory').textContent = gameState.current_question.category;
+                document.getElementById('questionValue').textContent = `${gameState.current_question.value}`;
+
+                if (gameState.buzz_timer_active) {
+                    buzzButton.disabled = true;
+                    setStatus('Reading question... wait for buzz activation');
+                } else if (gameState.question_state === 'buzzing_open') {
+                    // Check if my team already attempted (server-provided list) or is in the buzz queue
+                    const attemptedTeams = gameState.teams_attempted || [];
+                    const myTeamAttempted = attemptedTeams.includes(myTeamId) || gameState.buzz_queue.some(entry => entry.team_id === myTeamId);
+                    const myBuzzPosition = gameState.buzz_queue.findIndex(entry => entry.player_id === myPlayerId);
+
+                    if (myBuzzPosition >= 0) {
+                        buzzButton.disabled = true;
+                        if (myBuzzPosition === 0) {
+                            setStatus("You're up! Answer the question!", 'active');
+                        } else {
+                            setStatus(`You buzzed in! Position: ${myBuzzPosition + 1}`, 'waiting');
+                        }
+                    } else if (myTeamAttempted) {
+                        buzzButton.disabled = true;
+                        setStatus('Your team already attempted this question');
+                    } else {
+                        buzzButton.disabled = false;
+                        setStatus('BUZZ IN NOW!', 'ready');
+                    }
+                }
+            } else {
+                questionInfo.classList.add('hidden');
+                buzzButton.disabled = true;
+                setStatus('Waiting for next question...');
+            }
+        }
+
+        function setStatus(message, type = '') {
+            const statusEl = document.getElementById('statusMessage');
+            statusEl.textContent = message;
+            statusEl.style.background = type === 'ready' ? 'rgba(50,205,50,0.3)' :
+                                       type === 'active' ? 'rgba(255,215,0,0.3)' :
+                                       type === 'error' ? 'rgba(220,20,60,0.3)' :
+                                       'rgba(0,0,0,0.3)';
+        }
+    </script>
+</body>
+</html>
