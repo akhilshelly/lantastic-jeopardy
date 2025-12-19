@@ -1,0 +1,93 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+
+# pyenv
+.python-version
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Translations
+*.mo
+*.pot
+
+# Flask instance folder
+instance/
+.webassets-cache
+
+# Database files
+*.sqlite3
+*.db
+
+# Migrations
+migrations/
+
+# Logs
+logs/
+*.log
+
+# Environment variables and secrets
+.env
+.env.*
+.secrets/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Node / frontend
+node_modules/
+/dist/
+
+# Type checker caches
+.mypy_cache/
+.pyre/
+
+# Build artifacts
+*.pyc
+*.pyo
+*.pyd
+
+# Packaging
+.Pipfile.lock
+
+# Misc
+.egg/
