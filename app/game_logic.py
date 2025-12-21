@@ -195,8 +195,9 @@ class GameManager:
             # Add team to attempted list if not already present
             if current_buzzer.team_id not in self.state.teams_attempted:
                 self.state.teams_attempted.append(current_buzzer.team_id)
-            # Remove the current buzzer
-            self.state.buzz_queue.pop(0)
+
+            # Loop through the buzz queue. If a player from a team that has already attempted is found, remove them.
+            self.state.buzz_queue = [entry for entry in self.state.buzz_queue if entry.team_id not in self.state.teams_attempted]
 
             if self.state.buzz_queue:
                 # More people in queue - next buzzer answers
